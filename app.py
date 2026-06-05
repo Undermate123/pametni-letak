@@ -4,10 +4,12 @@ import json
 import requests
 import io
 
-# 1. Konfiguracija Gemini API-ja s tvojim ključem
-API_KEY = "AQ.Ab8RN6IJcde0Xtw8qbWoJZ_eDelB_Wrdg35axbOcUMeTorFWgg"
-genai.configure(api_key=API_KEY)
-
+# 1. Konfiguracija Gemini API-ja iz sigurnih postavki
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+else:
+    st.error("API ključ nije pronađen u postavkama aplikacije!")
+    
 # Postavke stranice optimizirane za mobitele
 st.set_page_config(page_title="Multi-Dućan Letak", layout="centered")
 st.title("🛍️ Pametni Čitač Letaka (PDF & Slike)")
