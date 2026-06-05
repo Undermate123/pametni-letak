@@ -29,7 +29,6 @@ bytes_data = None
 mime_type = None
 
 if izvor_unosa == "Upload datoteke (Slika ili PDF)":
-    # Ovdje smo dodali 'pdf' u dopuštene formate!
     uploaded_file = st.file_uploader("Učitaj letak (JPG, PNG ili PDF)", type=["jpg", "jpeg", "png", "pdf"])
     if uploaded_file:
         bytes_data = uploaded_file.read()
@@ -39,12 +38,10 @@ else:
     if pdf_url and st.button("Preuzmi letak s linka 🌐"):
         with st.spinner("Preuzimanje PDF-a s interneta..."):
             try:
-                # Preuzimanje PDF-a preko linka
                 response = requests.get(pdf_url, timeout=30)
                 if response.status_code == 200:
                     bytes_data = response.content
                     mime_type = "application/pdf"
-                    # Privremeno spremanje u memoriju
                     st.session_state["cached_pdf"] = (bytes_data, mime_type)
                     st.success("PDF uspješno preuzet s linka! Sada upiši ime dućana i klikni gumb 'Obradi letak' ispod.")
                 else:
@@ -52,7 +49,6 @@ else:
             except Exception as e:
                 st.error(f"Greška pri dohvaćanju linka: {e}")
 
-# Provjera imamo li spremljen PDF s linka u memoriji
 if izvor_unosa == "Zalijepi link (URL do PDF-a)" and "cached_pdf" in st.session_state:
     bytes_data, mime_type = st.session_state["cached_pdf"]
 
@@ -63,24 +59,22 @@ if st.button("Obradi letak pomoću AI 🧠"):
     elif bytes_data is None:
         st.error("Molimo te učitaj datoteku ili uspješno preuzmi PDF preko linka.")
     else:
-        with st.spinner(f"Gemini AI analizira cijeli letak za {naziv_ducana}... Ovo može potrajati ako je PDF velik. Pričekaj trenutak."):
+        with st.spinner(f"Gemini AI analizira letak za {naziv_ducana}... Pričekaj trenutak."):
             try:
-                # Detaljna uputa za AI
-                prompt = f"""
-                Pregledaj ovaj letak iz trgovine '{naziv_ducana}' i izvuci sve proizvode koji su na akciji, sniženju ili imaju posebnu ponudu.
-                Ako se radi o PDF-u s više stranica, obavezno pregledaj SVE stranice.
+                # Precizne upute za AI
+                prompt = """
+                Pregledaj ovaj letak i izvuci sve proizvode koji su na akciji, sniženju ili imaju posebnu ponudu.
+                Pregledaj sve dostupne stranice.
                 Razvrstaj ih u logičke kategorije kao što su: 'Mliječni proizvodi', 'Grickalice i slatkiši', 'Meso i riba', 'Voće i povrće', 'Pića', 'Pekara', 'Higijena i kućanstvo', 'Ostalo'.
                 
-                Vrati odgovor ISKLJUČIVO u ovom JSON formatu (nemoj pisati nikakav tekst prije ili poslije JSON-a, samo čisti JSON):
-                {{
-                  "Kategorija1": [
-                     {{"proizvod": "Naziv artikla i gramaža", "cijena": "Cijena u €", "popust": "Postotak ili opis akcije"}}
+                Vrati odgovor ISKLJUČIVO u ovom JSON formatu. Nemoj pisati nikakav popratni tekst, uvod ili zaključak, samo čisti JSON:
+                {
+                  "Kategorija": [
+                     {"proizvod": "Naziv artikla", "cijena": "Cijena", "popust": "Popust"}
                   ]
-                }}
-                Ako nema proizvoda za neku kategoriju, nemoj je uključivati.
+                }
                 """
                 
-                # Slanje sirovih bajtova i mime_type-a (slika ili pdf) u Gemini
                 file_part = {
                     "data": bytes_data,
                     "mime_type": mime_type
@@ -89,9 +83,18 @@ if st.button("Obradi letak pomoću AI 🧠"):
                 model = genai.GenerativeModel('gemini-2.5-flash')
                 response = model.generate_content([prompt, file_part])
                 
-                # Čišćenje i parsiranje JSON-a
-                clean_text = response.text.replace("```json", "").replace("```", "").strip()
-                podaci_iz_letka = json.loads(clean_text)
+                # PAMETNO ČIŠĆENJE ODGOVORA (Uklanja ```json i slične oznake ako ih AI doda)
+                raw_text = response.text.strip()
+                if raw_text.startswith("```"):
+                    # Ukloni početni ```json ili ```
+                    lines = raw_text.splitlines()
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    raw_text = "\n".join(lines).strip()
+                
+                podaci_iz_letka = json.loads(raw_text)
                 
                 brojac = 0
                 for kategorija, proizvodi in podaci_iz_letka.items():
@@ -109,9 +112,11 @@ if st.button("Obradi letak pomoću AI 🧠"):
                 if "cached_pdf" in st.session_state:
                     del st.session_state["cached_pdf"]
                 
+            except json.JSONDecodeError:
+                st.error("AI je vratio podatke u čudnom formatu koji ne možemo pročitati.")
+                st.info("Pokušaj ponovno kliknuti na gumb 'Obradi letak pomoću AI' – AI često iz drugog pokušaja popravi format.")
             except Exception as e:
                 st.error(f"Došlo je do pogreške prilikom obrade: {e}")
-                st.info("Napomena: Veliki PDF-ovi (iznad 30 MB) mogu uzrokovati timeout. Ako zapne, radije uslikaj samo stranice koje te zanimaju.")
 
 # --- 2. DIO: FILTRIRANJE I PREGLED ---
 if st.session_state.sve_akcije:
