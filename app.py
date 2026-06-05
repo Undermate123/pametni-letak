@@ -1,7 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import json
-from PIL import Image
+import requests
 import io
 
 # 1. Konfiguracija Gemini API-ja s tvojim ključem
@@ -10,8 +10,8 @@ genai.configure(api_key=API_KEY)
 
 # Postavke stranice optimizirane za mobitele
 st.set_page_config(page_title="Multi-Dućan Letak", layout="centered")
-st.title("🛍️ Pametni Čitač Letaka")
-st.caption("Učitaj letke iz različitih dućana, a AI će izvući i kategorizirati sve akcije!")
+st.title("🛍️ Pametni Čitač Letaka (PDF & Slike)")
+st.caption("Učitaj sliku, PDF ili zalijepi link na PDF letak. AI će izvući i kategorizirati sve akcije!")
 
 # Inicijalizacija baze podataka u memoriji aplikacije
 if "sve_akcije" not in st.session_state:
@@ -21,22 +21,54 @@ if "sve_akcije" not in st.session_state:
 st.subheader("1. Dodaj letak u bazu ➕")
 
 naziv_ducana = st.text_input("Unesi naziv dućana (npr. Lidl, Konzum, Kaufland):")
-uploaded_file = st.file_uploader("Učitaj sliku letka (JPG/PNG)", type=["jpg", "jpeg", "png"])
 
+# Odabir načina unosa na mobitelu
+izvor_unosa = st.radio("Odaberi način unosa letka:", ["Upload datoteke (Slika ili PDF)", "Zalijepi link (URL do PDF-a)"])
+
+bytes_data = None
+mime_type = None
+
+if izvor_unosa == "Upload datoteke (Slika ili PDF)":
+    # Ovdje smo dodali 'pdf' u dopuštene formate!
+    uploaded_file = st.file_uploader("Učitaj letak (JPG, PNG ili PDF)", type=["jpg", "jpeg", "png", "pdf"])
+    if uploaded_file:
+        bytes_data = uploaded_file.read()
+        mime_type = uploaded_file.type
+else:
+    pdf_url = st.text_input("Zalijepi direktan link na PDF letak:")
+    if pdf_url and st.button("Preuzmi letak s linka 🌐"):
+        with st.spinner("Preuzimanje PDF-a s interneta..."):
+            try:
+                # Preuzimanje PDF-a preko linka
+                response = requests.get(pdf_url, timeout=30)
+                if response.status_code == 200:
+                    bytes_data = response.content
+                    mime_type = "application/pdf"
+                    # Privremeno spremanje u memoriju
+                    st.session_state["cached_pdf"] = (bytes_data, mime_type)
+                    st.success("PDF uspješno preuzet s linka! Sada upiši ime dućana i klikni gumb 'Obradi letak' ispod.")
+                else:
+                    st.error(f"Nije moguće preuzeti PDF. Server je vratio grešku {response.status_code}")
+            except Exception as e:
+                st.error(f"Greška pri dohvaćanju linka: {e}")
+
+# Provjera imamo li spremljen PDF s linka u memoriji
+if izvor_unosa == "Zalijepi link (URL do PDF-a)" and "cached_pdf" in st.session_state:
+    bytes_data, mime_type = st.session_state["cached_pdf"]
+
+# Gumb za pokretanje AI analize
 if st.button("Obradi letak pomoću AI 🧠"):
     if not naziv_ducana:
         st.error("Molimo te unesi naziv dućana prije obrade.")
-    elif not uploaded_file:
-        st.error("Molimo te učitaj sliku letka.")
+    elif bytes_data is None:
+        st.error("Molimo te učitaj datoteku ili uspješno preuzmi PDF preko linka.")
     else:
-        with st.spinner(f"Gemini AI analizira letak za {naziv_ducana}... Pričekaj trenutak."):
+        with st.spinner(f"Gemini AI analizira cijeli letak za {naziv_ducana}... Ovo može potrajati ako je PDF velik. Pričekaj trenutak."):
             try:
-                # Otvaranje slike i priprema za Gemini
-                image = Image.open(uploaded_file)
-                
-                # Uputa za AI (Prompt) - tražimo točan JSON format i kategorije
+                # Detaljna uputa za AI
                 prompt = f"""
-                Pregledaj ovu sliku letka iz trgovine '{naziv_ducana}' i izvuci sve proizvode koji su na akciji, sniženju ili imaju posebnu ponudu.
+                Pregledaj ovaj letak iz trgovine '{naziv_ducana}' i izvuci sve proizvode koji su na akciji, sniženju ili imaju posebnu ponudu.
+                Ako se radi o PDF-u s više stranica, obavezno pregledaj SVE stranice.
                 Razvrstaj ih u logičke kategorije kao što su: 'Mliječni proizvodi', 'Grickalice i slatkiši', 'Meso i riba', 'Voće i povrće', 'Pića', 'Pekara', 'Higijena i kućanstvo', 'Ostalo'.
                 
                 Vrati odgovor ISKLJUČIVO u ovom JSON formatu (nemoj pisati nikakav tekst prije ili poslije JSON-a, samo čisti JSON):
@@ -48,15 +80,19 @@ if st.button("Obradi letak pomoću AI 🧠"):
                 Ako nema proizvoda za neku kategoriju, nemoj je uključivati.
                 """
                 
-                # Pozivanje Gemini modela koji podržava analizu slika
-                model = genai.GenerativeModel('gemini-2.5-flash')
-                response = model.generate_content([prompt, image])
+                # Slanje sirovih bajtova i mime_type-a (slika ili pdf) u Gemini
+                file_part = {
+                    "data": bytes_data,
+                    "mime_type": mime_type
+                }
                 
-                # Čišćenje i parsiranje JSON odgovora od AI-ja
+                model = genai.GenerativeModel('gemini-2.5-flash')
+                response = model.generate_content([prompt, file_part])
+                
+                # Čišćenje i parsiranje JSON-a
                 clean_text = response.text.replace("```json", "").replace("```", "").strip()
                 podaci_iz_letka = json.loads(clean_text)
                 
-                # Spremanje u lokalnu "bazu" u session_state
                 brojac = 0
                 for kategorija, proizvodi in podaci_iz_letka.items():
                     for p in proizvodi:
@@ -70,37 +106,34 @@ if st.button("Obradi letak pomoću AI 🧠"):
                         brojac += 1
                         
                 st.success(f"Uspješno dodano {brojac} artikala iz trgovine {naziv_ducana}!")
+                if "cached_pdf" in st.session_state:
+                    del st.session_state["cached_pdf"]
                 
             except Exception as e:
                 st.error(f"Došlo je do pogreške prilikom obrade: {e}")
-                st.info("Pokušaj ponovno ili provjeri je li slika čitljiva.")
+                st.info("Napomena: Veliki PDF-ovi (iznad 30 MB) mogu uzrokovati timeout. Ako zapne, radije uslikaj samo stranice koje te zanimaju.")
 
 # --- 2. DIO: FILTRIRANJE I PREGLED ---
 if st.session_state.sve_akcije:
     st.markdown("---")
     st.subheader("2. Pretraži i usporedi akcije 🔎")
     
-    # Izvlačenje opcija za filtere
     svi_ducani = sorted(list(set([p["Dućan"] for p in st.session_state.sve_akcije])))
     sve_kategorije = sorted(list(set([p["Kategorija"] for p in st.session_state.sve_akcije])))
     
-    # Filtri prilagođeni ekranu mobitela (dva stupca)
     col1, col2 = st.columns(2)
     with col1:
         odabrani_ducan = st.selectbox("Trgovina:", ["Sve trgovine"] + svi_ducani)
     with col2:
         odabrana_kategorija = st.selectbox("Kategorija:", ["Sve kategorije"] + sve_kategorije)
         
-    # Primjena filtera na podatke
     prikaz_podataka = st.session_state.sve_akcije
     if odabrani_ducan != "Sve trgovine":
         prikaz_podataka = [p for p in prikaz_podataka if p["Dućan"] == odabrani_ducan]
     if odabrana_kategorija != "Sve kategorije":
         prikaz_podataka = [p for p in prikaz_podataka if p["Kategorija"] == odabrana_kategorija]
         
-    # Prikaz finalne tablice
     if prikaz_podataka:
-        # Formatiramo tablicu za ljepši prikaz korisniku
         tablica_za_ekran = []
         for p in prikaz_podataka:
             tablica_za_ekran.append({
@@ -112,7 +145,6 @@ if st.session_state.sve_akcije:
             })
         st.dataframe(tablica_za_ekran, use_container_width=True, hide_index=True)
         
-        # Gumb za brisanje cijele liste ako želiš krenuti ispočetka
         if st.button("Očisti sve podatke 🗑️"):
             st.session_state.sve_akcije = []
             st.rerun()
